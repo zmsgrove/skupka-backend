@@ -17,7 +17,7 @@ const supabase = createClient(
 // Wazzup конфиг
 const WAZZUP_API_KEY = process.env.WAZZUP_API_KEY;
 const WAZZUP_CHANNEL_ID = process.env.WAZZUP_CHANNEL_ID;
-const WAZZUP_API = 'https://api.wazzup24.com/v3';
+const WAZZUP_API = 'https://api.wazzup24.ru/v3';
 
 // ─── Отправка сообщения через Wazzup ───────────────────────────────────────
 async function sendMessage(chatId, phone, text) {
