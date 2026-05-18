@@ -289,9 +289,15 @@ app.get('/ping', (req, res) => res.send('pong'));
 app.post('/setup-webhook', async (req, res) => {
   const { webhookUrl } = req.body;
   try {
-    await axios.post(
+    await axios.patch(
       `${WAZZUP_API}/webhooks`,
-      { webhooksUri: webhookUrl },
+      {
+        webhooksUri: webhookUrl,
+        subscriptions: {
+          messagesAndStatuses: true,
+          contactsAndDealsCreation: true
+        }
+      },
       { headers: { 'Authorization': `Bearer ${WAZZUP_API_KEY}` } }
     );
     res.json({ ok: true, message: 'Webhook настроен!' });
