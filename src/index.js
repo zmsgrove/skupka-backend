@@ -83,11 +83,13 @@ async function handleBotStep(phone, chatId, messageText, messageId) {
   // ── Шаг START: первое сообщение ──
   if (!session || session.step === 'start') {
     // Создать или обновить сессию
-    await supabase.from('bot_sessions').upsert({
-      phone,
-      wazzup_chat_id: chatId,
-      step: 'ask_name',
-    }, { onConflict: 'phone' });
+await supabase.from('bot_sessions').upsert({
+  phone,
+  wazzup_chat_id: chatId,
+  step: 'ask_name',
+  collected_name: null,
+  collected_city: null,
+}, { onConflict: 'phone' });
 
     await sendMessage(chatId, phone,
       `Здравствуйте! 👋 Вы обратились в *SKUPKA* — пункт скупки техники.\n\nДля оформления заявки ответьте на несколько вопросов.\n\nНапишите ваше *имя*:`
