@@ -185,7 +185,7 @@ if (!messages || !Array.isArray(messages)) return;
 
     for (const msg of messages) {
       // Только входящие сообщения (от клиента)
-      if (msg.status !== 'received') continue;
+      if (msg.status !== 'inbound') continue;
       if (msg.type !== 'text') continue;
 
       const phone = msg.chatId;
