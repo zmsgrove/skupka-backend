@@ -52,26 +52,6 @@ async function saveMessage(leadId, text, direction, messageId = null, senderName
   });
 }
 
-async function saveImageToStorage(imageUrl, messageId) {
-  try {
-    const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
-    const buffer = Buffer.from(response.data);
-    const contentType = response.headers['content-type'] || 'image/jpeg';
-    const ext = contentType.includes('png') ? 'png' : 'jpg';
-    const fileName = `photos/${messageId || Date.now()}.${ext}`;
-    const { error } = await supabase.storage
-      .from('chat-images')
-      .upload(fileName, buffer, { contentType, upsert: true });
-    if (error) { console.error('❌ Storage error:', error); return imageUrl; }
-    const { data: urlData } = supabase.storage.from('chat-images').getPublicUrl(fileName);
-    console.log('📸 Фото сохранено:', urlData.publicUrl);
-    return urlData.publicUrl;
-  } catch (err) {
-    console.error('❌ Image save error:', err.message);
-    return imageUrl;
-  }
-}
-
 async function handleBotStep(phone, chatId, messageText, messageId) {
   const text = messageText.trim();
   const { data: session } = await supabase
@@ -81,7 +61,11 @@ async function handleBotStep(phone, chatId, messageText, messageId) {
   if (session && session.step === 'done') {
     const { data: lead } = await supabase
       .from('leads').select('id').eq('wazzup_chat_id', chatId).single();
-    if (lead) await saveMessage(lead.id, text, 'in', messageId);
+    if (lead) {
+      await saveMessage(lead.id, text, 'in', messageId);
+      // Увеличить счётчик непрочитанных
+      await supabase.rpc('increment_unread', { lead_id: lead.id });
+    }
     return;
   }
 
@@ -134,6 +118,7 @@ async function handleBotStep(phone, chatId, messageText, messageId) {
       client_name: name || 'Неизвестно',
       phone, device: text, city: city || 'Атырау',
       status: 'new', wazzup_chat_id: chatId,
+      unread_count: 0,
     }).select().single();
     if (error) { console.error('❌ Lead error:', error); return; }
     await supabase.from('bot_sessions').update({ step: 'done' }).eq('phone', phone);
@@ -156,18 +141,23 @@ app.post('/webhook', async (req, res) => {
       const phone = msg.chatId;
       const chatId = msg.chatId;
       const messageId = msg.messageId;
+
       if (msg.type === 'image') {
-        const savedUrl = await saveImageToStorage(msg.contentUri, messageId);
-        const text = `📷 [Фото] ${savedUrl}`;
+        // Сохраняем оригинальную ссылку Wazzup (не качаем)
+        const text = `📷 [Фото] ${msg.contentUri}`;
         const { data: session } = await supabase
           .from('bot_sessions').select('*').eq('phone', phone).maybeSingle();
         if (session && session.step === 'done') {
           const { data: lead } = await supabase
             .from('leads').select('id').eq('wazzup_chat_id', chatId).single();
-          if (lead) await saveMessage(lead.id, text, 'in', messageId);
+          if (lead) {
+            await saveMessage(lead.id, text, 'in', messageId);
+            await supabase.rpc('increment_unread', { lead_id: lead.id });
+          }
         }
         continue;
       }
+
       const text = (typeof msg.text === 'object' ? msg.text?.text : msg.text) || '';
       console.log(`📩 Входящее [${phone}]: ${text}`);
       await handleBotStep(phone, chatId, text, messageId);
@@ -213,6 +203,13 @@ app.patch('/api/leads/:id', async (req, res) => {
     );
   }
   res.json(data);
+});
+
+// Сбросить счётчик непрочитанных
+app.post('/api/leads/:id/read', async (req, res) => {
+  const { id } = req.params;
+  await supabase.from('leads').update({ unread_count: 0 }).eq('id', id);
+  res.json({ ok: true });
 });
 
 app.post('/api/leads/:id/comments', async (req, res) => {
