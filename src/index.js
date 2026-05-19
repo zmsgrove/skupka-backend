@@ -189,8 +189,10 @@ app.get('/api/leads', async (req, res) => {
 // ─── API: получить один лид с сообщениями и комментариями ──────────────────
 app.get('/api/leads/:id', async (req, res) => {
   const { id } = req.params;
+  console.log('📋 Getting lead:', id);
   const { data: lead, error } = await supabase
     .from('leads').select('*').eq('id', id).single();
+  console.log('📋 Lead result:', lead, error);
   if (error) return res.status(404).json({ error });
 
   const { data: messages } = await supabase
