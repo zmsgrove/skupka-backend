@@ -179,8 +179,9 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200); // Wazzup ждёт быстрый ответ
 
   try {
-    const { messages } = req.body;
-    if (!messages || !Array.isArray(messages)) return;
+    console.log('📦 Webhook body:', JSON.stringify(req.body));
+const { messages } = req.body;
+if (!messages || !Array.isArray(messages)) return;
 
     for (const msg of messages) {
       // Только входящие сообщения (от клиента)
