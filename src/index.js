@@ -17,34 +17,27 @@ app.use(cors({
 }));
 app.options('*', cors());
 
-// Supabase клиент
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// Wazzup конфиг
 const WAZZUP_API_KEY = process.env.WAZZUP_API_KEY;
 const WAZZUP_CHANNEL_ID = process.env.WAZZUP_CHANNEL_ID;
 const WAZZUP_API = 'https://api.wazzup24.ru/v3';
 
-// ─── Отправка сообщения через Wazzup ───────────────────────────────────────
+const CITY_ADDRESSES = {
+  'Атырау': 'Каныша Сатпаева 32',
+  'Актобе': 'Абулхаир Хана 21',
+  'Уральск': 'Северо-Восток 47 или Курмангазы 162',
+};
+
 async function sendMessage(chatId, phone, text) {
   try {
     await axios.post(
       `${WAZZUP_API}/message`,
-      {
-        channelId: WAZZUP_CHANNEL_ID,
-        chatType: 'whatsapp',
-        chatId: phone,
-        text: text,
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${WAZZUP_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      }
+      { channelId: WAZZUP_CHANNEL_ID, chatType: 'whatsapp', chatId: phone, text },
+      { headers: { 'Authorization': `Bearer ${WAZZUP_API_KEY}`, 'Content-Type': 'application/json' } }
     );
     console.log(`✅ Сообщение отправлено: ${phone}`);
   } catch (err) {
@@ -52,28 +45,38 @@ async function sendMessage(chatId, phone, text) {
   }
 }
 
-// ─── Сохранение входящего сообщения в БД ───────────────────────────────────
 async function saveMessage(leadId, text, direction, messageId = null, senderName = null) {
   await supabase.from('messages').insert({
-    lead_id: leadId,
-    wazzup_message_id: messageId,
-    direction,
-    text,
-    sender_name: senderName,
+    lead_id: leadId, wazzup_message_id: messageId,
+    direction, text, sender_name: senderName,
   });
 }
 
-// ─── Бот: обработка шагов ─────────────────────────────────────────────────
+async function saveImageToStorage(imageUrl, messageId) {
+  try {
+    const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+    const buffer = Buffer.from(response.data);
+    const contentType = response.headers['content-type'] || 'image/jpeg';
+    const ext = contentType.includes('png') ? 'png' : 'jpg';
+    const fileName = `photos/${messageId || Date.now()}.${ext}`;
+    const { error } = await supabase.storage
+      .from('chat-images')
+      .upload(fileName, buffer, { contentType, upsert: true });
+    if (error) { console.error('❌ Storage error:', error); return imageUrl; }
+    const { data: urlData } = supabase.storage.from('chat-images').getPublicUrl(fileName);
+    console.log('📸 Фото сохранено:', urlData.publicUrl);
+    return urlData.publicUrl;
+  } catch (err) {
+    console.error('❌ Image save error:', err.message);
+    return imageUrl;
+  }
+}
+
 async function handleBotStep(phone, chatId, messageText, messageId) {
   const text = messageText.trim();
-
-  const { data: session, error: sessionError } = await supabase
-    .from('bot_sessions')
-    .select('*')
-    .eq('phone', phone)
-    .maybeSingle();
-
-  console.log('🔍 Session:', JSON.stringify(session), 'Text:', text);
+  const { data: session } = await supabase
+    .from('bot_sessions').select('*').eq('phone', phone).maybeSingle();
+  console.log('🔍 Session step:', session?.step, '| Text:', text);
 
   if (session && session.step === 'done') {
     const { data: lead } = await supabase
@@ -88,30 +91,25 @@ async function handleBotStep(phone, chatId, messageText, messageId) {
       collected_name: null, collected_city: null,
     });
     await sendMessage(chatId, phone,
-      `Здравствуйте! 👋 Вы обратились в *SKUPKA* — пункт скупки техники.\n\nДля оформления заявки ответьте на несколько вопросов.\n\nНапишите ваше *имя*:`
+      `Здравствуйте! 👋 Вы обратились в *SKUPKA* — магазин по продаже и скупке техники.\n\nДля заявки ответьте на несколько вопросов.\n\nНапишите ваше *имя*:`
     );
     return;
   }
 
   if (session.step === 'ask_name') {
     console.log('💾 Saving name:', text);
-    const { error } = await supabase.from('bot_sessions')
-      .update({ collected_name: text, step: 'ask_city' })
-      .eq('phone', phone);
-    console.log('💾 Save error:', error);
+    await supabase.from('bot_sessions')
+      .update({ collected_name: text, step: 'ask_city' }).eq('phone', phone);
     await sendMessage(chatId, phone,
-      `Приятно познакомиться, *${text}*! 😊\n\nНапишите ваш *город*:\n\n• Атырау\n• Актобе\n• Уральск`
+      `Приятно познакомиться, *${text}*! 😊\n\nНапишите ваш город:\n• Атырау\n• Актобе\n• Уральск`
     );
     return;
   }
 
   if (session.step === 'ask_city') {
-    const normalized = text.toLowerCase().trim()
-      .replace('ё', 'е')
-      .replace(/[^а-яa-z]/g, '');
-    console.log('🏙️ City normalized:', normalized);
+    const normalized = text.toLowerCase().trim().replace('ё', 'е').replace(/[^а-яa-z]/g, '');
     const cityMap = {
-      'атырау': 'Атырау', 'атыра': 'Атырау', 'атырав': 'Атырау',
+      'атырау': 'Атырау', 'атыра': 'Атырау',
       'актобе': 'Актобе', 'актоб': 'Актобе',
       'уральск': 'Уральск', 'уралск': 'Уральск', 'уральс': 'Уральск', 'урал': 'Уральск',
     };
@@ -123,26 +121,21 @@ async function handleBotStep(phone, chatId, messageText, messageId) {
       return;
     }
     await supabase.from('bot_sessions')
-      .update({ collected_city: city, step: 'ask_device' })
-      .eq('phone', phone);
+      .update({ collected_city: city, step: 'ask_device' }).eq('phone', phone);
     await sendMessage(chatId, phone,
-      `Отлично! Город *${city}* принят. ✅\n\nНапишите что за *техника* вы хотите продать?\n\n_Пример: iPhone 13 Pro, Samsung Galaxy S21_`
+      `Отлично! ✅\n\nНапишите что за технику вы хотите продать?\n\nПример: iPhone 13 Pro, Samsung Galaxy S21`
     );
     return;
   }
 
   if (session.step === 'ask_device') {
     const { collected_name: name, collected_city: city } = session;
-    console.log('📱 Device:', text, 'Name:', name, 'City:', city);
     const { data: lead, error } = await supabase.from('leads').insert({
       client_name: name || 'Неизвестно',
       phone, device: text, city: city || 'Атырау',
       status: 'new', wazzup_chat_id: chatId,
     }).select().single();
-    if (error) {
-      console.error('❌ Lead error:', error);
-      return;
-    }
+    if (error) { console.error('❌ Lead error:', error); return; }
     await supabase.from('bot_sessions').update({ step: 'done' }).eq('phone', phone);
     await saveMessage(lead.id, `Имя: ${name}, Город: ${city}, Техника: ${text}`, 'in', messageId);
     await sendMessage(chatId, phone,
@@ -152,29 +145,31 @@ async function handleBotStep(phone, chatId, messageText, messageId) {
   }
 }
 
-// ─── WEBHOOK от Wazzup ─────────────────────────────────────────────────────
 app.post('/webhook', async (req, res) => {
-  res.sendStatus(200); // Wazzup ждёт быстрый ответ
-
+  res.sendStatus(200);
   try {
-    console.log('📦 Webhook body:', JSON.stringify(req.body));
-const { messages } = req.body;
-if (!messages || !Array.isArray(messages)) return;
-
+    const { messages } = req.body;
+    if (!messages || !Array.isArray(messages)) return;
     for (const msg of messages) {
-      // Только входящие сообщения (от клиента)
       if (msg.status !== 'inbound') continue;
       if (msg.type !== 'text' && msg.type !== 'image') continue;
-
       const phone = msg.chatId;
       const chatId = msg.chatId;
-      const text = msg.type === 'image' 
-  ? `📷 [Фото] ${msg.contentUri || ''}` 
-  : (typeof msg.text === 'object' ? msg.text?.text : msg.text) || '';
-      const messageId = msg.id;
-
+      const messageId = msg.messageId;
+      if (msg.type === 'image') {
+        const savedUrl = await saveImageToStorage(msg.contentUri, messageId);
+        const text = `📷 [Фото] ${savedUrl}`;
+        const { data: session } = await supabase
+          .from('bot_sessions').select('*').eq('phone', phone).maybeSingle();
+        if (session && session.step === 'done') {
+          const { data: lead } = await supabase
+            .from('leads').select('id').eq('wazzup_chat_id', chatId).single();
+          if (lead) await saveMessage(lead.id, text, 'in', messageId);
+        }
+        continue;
+      }
+      const text = (typeof msg.text === 'object' ? msg.text?.text : msg.text) || '';
       console.log(`📩 Входящее [${phone}]: ${text}`);
-
       await handleBotStep(phone, chatId, text, messageId);
     }
   } catch (err) {
@@ -182,7 +177,6 @@ if (!messages || !Array.isArray(messages)) return;
   }
 });
 
-// ─── API: получить все лиды ────────────────────────────────────────────────
 app.get('/api/leads', async (req, res) => {
   const { city } = req.query;
   let query = supabase.from('leads').select('*').order('created_at', { ascending: false });
@@ -192,99 +186,62 @@ app.get('/api/leads', async (req, res) => {
   res.json(data);
 });
 
-// ─── API: получить один лид с сообщениями и комментариями ──────────────────
 app.get('/api/leads/:id', async (req, res) => {
   const { id } = req.params;
-  console.log('📋 Getting lead:', id);
   const { data: lead, error } = await supabase
     .from('leads').select('*').eq('id', id).single();
-  console.log('📋 Lead result:', lead, error);
   if (error) return res.status(404).json({ error });
-
   const { data: messages } = await supabase
     .from('messages').select('*').eq('lead_id', id).order('created_at');
-
   const { data: comments } = await supabase
     .from('comments').select('*').eq('lead_id', id).order('created_at');
-
   res.json({ ...lead, messages: messages || [], comments: comments || [] });
 });
 
-// ─── API: обновить статус лида ─────────────────────────────────────────────
 app.patch('/api/leads/:id', async (req, res) => {
   const { id } = req.params;
-  const updates = req.body;
-  console.log('📝 PATCH lead:', id, updates);
-
-  const { send_estimate, ...dbUpdates } = updates;
-
+  const { send_estimate, ...updates } = req.body;
+  console.log('📝 PATCH lead:', id, JSON.stringify(updates));
   const { data, error } = await supabase
-    .from('leads').update(dbUpdates).eq('id', id).select().single();
-
-  console.log('📝 PATCH result:', data, error);
-  if (error) return res.status(500).json({ error });
-
-  // Если отправляем оценку клиенту
-  if (updates.estimate_amount && updates.send_estimate) {
-    const lead = data;
+    .from('leads').update(updates).eq('id', id).select().single();
+  if (error) { console.error('❌ PATCH error:', error); return res.status(500).json({ error }); }
+  if (updates.estimate_amount && send_estimate) {
     const amount = new Intl.NumberFormat('ru-KZ').format(updates.estimate_amount);
-    await sendMessage(lead.wazzup_chat_id, lead.phone,
-      `Здравствуйте, *${lead.client_name}*! 👋\n\nМы оценили вашу технику: *${lead.device}*\n\n💰 Предварительная стоимость: *${amount} ₸*\n\nЕсли вас устраивает цена — приходите в наш пункт приёма.\nЕсли есть вопросы — напишите нам, мы готовы помочь! 😊`
+    const address = CITY_ADDRESSES[data.city] || 'наш пункт приёма';
+    await sendMessage(data.wazzup_chat_id, data.phone,
+      `Спасибо за ожидание, *${data.client_name}*! 👋\n\nМы оценили вашу технику: *${data.device}*\n\n💰 Предварительная стоимость: *${amount} ₸*\n\nЕсли вас устраивает цена — ждем вас по адресу: *${address}*\n\nЕсли есть вопросы — напишите нам, мы готовы помочь! 😊`
     );
   }
-
   res.json(data);
 });
 
-// ─── API: добавить комментарий ─────────────────────────────────────────────
 app.post('/api/leads/:id/comments', async (req, res) => {
   const { id } = req.params;
   const { author, text } = req.body;
-
-  const { data, error } = await supabase.from('comments').insert({
-    lead_id: id,
-    author,
-    text,
-  }).select().single();
-
+  const { data, error } = await supabase.from('comments')
+    .insert({ lead_id: id, author, text }).select().single();
   if (error) return res.status(500).json({ error });
   res.json(data);
 });
 
-// ─── API: отправить сообщение клиенту из CRM ──────────────────────────────
 app.post('/api/leads/:id/send', async (req, res) => {
   const { id } = req.params;
   const { text, author } = req.body;
-
-  const { data: lead } = await supabase
-    .from('leads').select('*').eq('id', id).single();
-
+  const { data: lead } = await supabase.from('leads').select('*').eq('id', id).single();
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
-
   await sendMessage(lead.wazzup_chat_id, lead.phone, text);
-
-  // Сохранить исходящее сообщение
   await saveMessage(id, text, 'out', null, author);
-
   res.json({ ok: true });
 });
 
-// ─── Ping для keep-alive (Render не засыпал) ──────────────────────────────
 app.get('/ping', (req, res) => res.send('pong'));
 
-// ─── Настройка вебхука в Wazzup ────────────────────────────────────────────
 app.post('/setup-webhook', async (req, res) => {
   const { webhookUrl } = req.body;
   try {
     await axios.patch(
       `${WAZZUP_API}/webhooks`,
-      {
-        webhooksUri: webhookUrl,
-        subscriptions: {
-          messagesAndStatuses: true,
-          contactsAndDealsCreation: true
-        }
-      },
+      { webhooksUri: webhookUrl, subscriptions: { messagesAndStatuses: true, contactsAndDealsCreation: true } },
       { headers: { 'Authorization': `Bearer ${WAZZUP_API_KEY}` } }
     );
     res.json({ ok: true, message: 'Webhook настроен!' });
