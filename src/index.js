@@ -58,122 +58,86 @@ async function saveMessage(leadId, text, direction, messageId = null, senderName
 async function handleBotStep(phone, chatId, messageText, messageId) {
   const text = messageText.trim();
 
-  // Получить текущую сессию
-  const { data: session } = await supabase
+  const { data: session, error: sessionError } = await supabase
     .from('bot_sessions')
     .select('*')
     .eq('phone', phone)
-    .single();
+    .maybeSingle();
 
-  // Проверить есть ли уже завершённая заявка (статус done)
+  console.log('🔍 Session:', JSON.stringify(session), 'Text:', text);
+
   if (session && session.step === 'done') {
-    // Уже есть заявка — найти lead и сохранить сообщение
     const { data: lead } = await supabase
-      .from('leads')
-      .select('id')
-      .eq('wazzup_chat_id', chatId)
-      .single();
-
-    if (lead) {
-      await saveMessage(lead.id, text, 'in', messageId);
-    }
+      .from('leads').select('id').eq('wazzup_chat_id', chatId).single();
+    if (lead) await saveMessage(lead.id, text, 'in', messageId);
     return;
   }
 
-  // ── Шаг START: первое сообщение ──
-  if (!session || session.step === 'start') {
-    // Создать или обновить сессию
-await supabase.from('bot_sessions').upsert({
-  phone,
-  wazzup_chat_id: chatId,
-  step: 'ask_name',
-  collected_name: null,
-  collected_city: null,
-}, { onConflict: 'phone' });
-
+  if (!session) {
+    await supabase.from('bot_sessions').insert({
+      phone, wazzup_chat_id: chatId, step: 'ask_name',
+      collected_name: null, collected_city: null,
+    });
     await sendMessage(chatId, phone,
       `Здравствуйте! 👋 Вы обратились в *SKUPKA* — пункт скупки техники.\n\nДля оформления заявки ответьте на несколько вопросов.\n\nНапишите ваше *имя*:`
     );
     return;
   }
 
-  // ── Шаг ASK_NAME: получили имя ──
   if (session.step === 'ask_name') {
-    await supabase.from('bot_sessions').update({
-      collected_name: text,
-      step: 'ask_city',
-    }).eq('phone', phone);
-
+    console.log('💾 Saving name:', text);
+    const { error } = await supabase.from('bot_sessions')
+      .update({ collected_name: text, step: 'ask_city' })
+      .eq('phone', phone);
+    console.log('💾 Save error:', error);
     await sendMessage(chatId, phone,
       `Приятно познакомиться, *${text}*! 😊\n\nНапишите ваш *город*:\n\n• Атырау\n• Актобе\n• Уральск`
     );
     return;
   }
 
-  // ── Шаг ASK_CITY: получили город ──
   if (session.step === 'ask_city') {
+    const normalized = text.toLowerCase().trim()
+      .replace('ё', 'е')
+      .replace(/[^а-яa-z]/g, '');
+    console.log('🏙️ City normalized:', normalized);
     const cityMap = {
-  'атырау': 'Атырау',
-  'актобе': 'Актобе',
-  'уральск': 'Уральск',
-  'уральс': 'Уральск',
-  'атыра': 'Атырау',
-  'актоб': 'Актобе',
-};
-const cityKey = text.toLowerCase().trim();
-const city = cityMap[cityKey];
-
+      'атырау': 'Атырау', 'атыра': 'Атырау', 'атырав': 'Атырау',
+      'актобе': 'Актобе', 'актоб': 'Актобе',
+      'уральск': 'Уральск', 'уралск': 'Уральск', 'уральс': 'Уральск', 'урал': 'Уральск',
+    };
+    const city = cityMap[normalized];
     if (!city) {
       await sendMessage(chatId, phone,
         `❗ Пожалуйста, напишите один из городов:\n\n• *Атырау*\n• *Актобе*\n• *Уральск*`
       );
       return;
     }
-
-    await supabase.from('bot_sessions').update({
-      collected_city: city,
-      step: 'ask_device',
-    }).eq('phone', phone);
-
+    await supabase.from('bot_sessions')
+      .update({ collected_city: city, step: 'ask_device' })
+      .eq('phone', phone);
     await sendMessage(chatId, phone,
-      `Отлично! Город *${city}* принят. ✅\n\nНапишите что за *техника* вы хотите продать?\n\n_Пример: iPhone 13 Pro, Samsung Galaxy S21, ноутбук Dell и т.д._`
+      `Отлично! Город *${city}* принят. ✅\n\nНапишите что за *техника* вы хотите продать?\n\n_Пример: iPhone 13 Pro, Samsung Galaxy S21_`
     );
     return;
   }
 
-  // ── Шаг ASK_DEVICE: получили технику — создаём заявку ──
   if (session.step === 'ask_device') {
-    const device = text;
     const { collected_name: name, collected_city: city } = session;
-
-    // Создать lead
+    console.log('📱 Device:', text, 'Name:', name, 'City:', city);
     const { data: lead, error } = await supabase.from('leads').insert({
-      client_name: name,
-      phone: phone,
-      device: device,
-      city: city,
-      status: 'new',
-      wazzup_chat_id: chatId,
+      client_name: name || 'Неизвестно',
+      phone, device: text, city: city || 'Атырау',
+      status: 'new', wazzup_chat_id: chatId,
     }).select().single();
-
     if (error) {
-      console.error('❌ Ошибка создания lead:', error);
-      await sendMessage(chatId, phone,
-        `Произошла ошибка. Пожалуйста, напишите нам позже.`
-      );
+      console.error('❌ Lead error:', error);
       return;
     }
-
-    // Обновить сессию
-    await supabase.from('bot_sessions').update({
-      step: 'done',
-    }).eq('phone', phone);
-
-    // Сохранить историю бота как первые сообщения
-    await saveMessage(lead.id, `[БОТ] Имя: ${name}, Город: ${city}, Техника: ${device}`, 'in', messageId);
-
+    await supabase.from('bot_sessions').update({ step: 'done' }).eq('phone', phone);
+    await saveMessage(lead.id, `Имя: ${name}, Город: ${city}, Техника: ${text}`, 'in', messageId);
     await sendMessage(chatId, phone,
-      `✅ Спасибо, *${name}*! Ваша заявка принята.\n\n📋 *Детали заявки:*\n• Город: ${city}\n• Техника: ${device}\n\nНаш специалист свяжется с вами в ближайшее время для оценки. ⏳`
+      `✅ Спасибо, *${name}*! Ваша заявка принята.\n\n📋 *Детали:*\n• Город: ${city}\n• Техника: ${text}\n\nНаш специалист свяжется с вами в ближайшее время! ⏳`
     );
     return;
   }
