@@ -159,7 +159,7 @@ if (!messages || !Array.isArray(messages)) return;
 
       const phone = msg.chatId;
       const chatId = msg.chatId;
-      const text = msg.text?.text || '';
+      const text = (typeof msg.text === 'object' ? msg.text?.text : msg.text) || '';
       const messageId = msg.id;
 
       console.log(`📩 Входящее [${phone}]: ${text}`);
