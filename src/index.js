@@ -6,6 +6,10 @@ const axios = require('axios');
 
 const app = express();
 app.use(express.json());
+app.use((req, res, next) => {
+  console.log(`➡️ ${req.method} ${req.url}`);
+  next();
+});
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -281,6 +285,11 @@ app.post('/setup-webhook', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err?.response?.data || err.message });
   }
+});
+
+app.use((err, req, res, next) => {
+  console.error('💥 Server error:', err);
+  res.status(500).json({ error: err.message });
 });
 
 const PORT = process.env.PORT || 3001;
