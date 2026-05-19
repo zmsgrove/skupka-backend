@@ -164,11 +164,13 @@ if (!messages || !Array.isArray(messages)) return;
     for (const msg of messages) {
       // Только входящие сообщения (от клиента)
       if (msg.status !== 'inbound') continue;
-      if (msg.type !== 'text') continue;
+      if (msg.type !== 'text' && msg.type !== 'image') continue;
 
       const phone = msg.chatId;
       const chatId = msg.chatId;
-      const text = (typeof msg.text === 'object' ? msg.text?.text : msg.text) || '';
+      const text = msg.type === 'image' 
+  ? `📷 [Фото] ${msg.contentUri || ''}` 
+  : (typeof msg.text === 'object' ? msg.text?.text : msg.text) || '';
       const messageId = msg.id;
 
       console.log(`📩 Входящее [${phone}]: ${text}`);
@@ -212,10 +214,14 @@ app.get('/api/leads/:id', async (req, res) => {
 app.patch('/api/leads/:id', async (req, res) => {
   const { id } = req.params;
   const updates = req.body;
+  console.log('📝 PATCH lead:', id, updates);
+
+  const { send_estimate, ...dbUpdates } = updates;
 
   const { data, error } = await supabase
-    .from('leads').update(updates).eq('id', id).select().single();
+    .from('leads').update(dbUpdates).eq('id', id).select().single();
 
+  console.log('📝 PATCH result:', data, error);
   if (error) return res.status(500).json({ error });
 
   // Если отправляем оценку клиенту
