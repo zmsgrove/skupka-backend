@@ -111,12 +111,15 @@ async function handleBotStep(phone, chatId, messageText, messageId) {
   // ── Шаг ASK_CITY: получили город ──
   if (session.step === 'ask_city') {
     const cityMap = {
-      'атырау': 'Атырау',
-      'актобе': 'Актобе',
-      'уральск': 'Уральск',
-    };
-    const cityKey = text.toLowerCase();
-    const city = cityMap[cityKey];
+  'атырау': 'Атырау',
+  'актобе': 'Актобе',
+  'уральск': 'Уральск',
+  'уральс': 'Уральск',
+  'атыра': 'Атырау',
+  'актоб': 'Актобе',
+};
+const cityKey = text.toLowerCase().trim();
+const city = cityMap[cityKey];
 
     if (!city) {
       await sendMessage(chatId, phone,
