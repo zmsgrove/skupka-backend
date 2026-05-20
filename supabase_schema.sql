@@ -79,3 +79,14 @@ CREATE TRIGGER bot_sessions_updated_at
 ALTER PUBLICATION supabase_realtime ADD TABLE leads;
 ALTER PUBLICATION supabase_realtime ADD TABLE messages;
 ALTER PUBLICATION supabase_realtime ADD TABLE comments;
+
+-- ─── Добавить поле unread_count в leads ───────────────────────────────────
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS unread_count INTEGER DEFAULT 0;
+
+-- ─── Функция для увеличения счётчика непрочитанных ────────────────────────
+CREATE OR REPLACE FUNCTION increment_unread(lead_id UUID)
+RETURNS void AS $$
+BEGIN
+  UPDATE leads SET unread_count = COALESCE(unread_count, 0) + 1 WHERE id = lead_id;
+END;
+$$ LANGUAGE plpgsql;
