@@ -15,7 +15,13 @@ const WAZZUP_API_KEY = process.env.WAZZUP_API_KEY;
 const WAZZUP_CHANNEL_ID = process.env.WAZZUP_CHANNEL_ID;
 const WAZZUP_API = 'https://api.wazzup24.ru/v3';
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID; // fallback
+
+const TG_CITY_CHATS = {
+  'Атырау': process.env.TELEGRAM_CHAT_ID_ATYRAU || process.env.TELEGRAM_CHAT_ID,
+  'Актобе': process.env.TELEGRAM_CHAT_ID_AKTOBE || process.env.TELEGRAM_CHAT_ID,
+  'Уральск': process.env.TELEGRAM_CHAT_ID_URALSK || process.env.TELEGRAM_CHAT_ID,
+};
 
 const CITY_ADDRESSES = {
   'Атырау': 'Каныша Сатпаева 32',
@@ -63,11 +69,13 @@ async function saveMessage(leadId, text, direction, messageId = null, senderName
   });
 }
 
-async function tg(text) {
-  if (!TG_TOKEN || !TG_CHAT_ID) return;
+async function tg(text, city) {
+  if (!TG_TOKEN) return;
+  const chatId = (city && TG_CITY_CHATS[city]) ? TG_CITY_CHATS[city] : TG_CHAT_ID;
+  if (!chatId) return;
   try {
     await axios.post(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-      chat_id: TG_CHAT_ID, text, parse_mode: 'Markdown',
+      chat_id: chatId, text, parse_mode: 'Markdown',
     });
   } catch (err) { console.error('❌ TG error:', err?.response?.data || err.message); }
 }
@@ -83,7 +91,8 @@ async function sendTelegramNewLead(lead) {
     `📱 *Техника:* ${lead.device}\n` +
     `🏙️ *Город:* ${lead.city}\n` +
     `📞 *Телефон:* ${lead.phone}\n` +
-    `🕐 *Время:* ${time}`
+    `🕐 *Время:* ${time}`,
+    lead.city
   );
 }
 
@@ -382,22 +391,26 @@ app.post('/cron/morning-report', async (req, res) => {
   const yd = new Date(now); yd.setDate(yd.getDate()-1);
   const ydStart = new Date(yd); ydStart.setHours(0,0,0,0);
   const ydEnd = new Date(yd); ydEnd.setHours(23,59,59,999);
-  const newL=all.filter(l=>l.status==='new');
-  const inP=all.filter(l=>l.status==='in_progress');
-  const wait=all.filter(l=>l.status==='waiting');
-  const overdue=inP.filter(l=>(Date.now()-new Date(l.updated_at||l.created_at).getTime())>10*3600*1000);
-  const ydSucc=all.filter(l=>{const d=new Date(l.updated_at||l.created_at);return l.status==='success'&&d>=ydStart&&d<=ydEnd;});
-  const ydFail=all.filter(l=>{const d=new Date(l.updated_at||l.created_at);return l.status==='fail'&&d>=ydStart&&d<=ydEnd;});
-  const ydAmount=ydSucc.reduce((s,l)=>s+(Number(l.estimate_amount)||0),0);
-  const fmt=n=>new Intl.NumberFormat('ru-KZ').format(Math.round(n));
-  const byCity={};['Атырау','Актобе','Уральск'].forEach(c=>{byCity[c]=all.filter(l=>l.city===c&&['new','in_progress','waiting'].includes(l.status)).length;});
-  let msg=`☀️ *Доброе утро! Сводка SKUPKA CRM*\n\n`;
-  msg+=`🆕 Новые: *${newL.length}* заявок ждут обработки\n`;
-  msg+=`⚡ В работе: *${inP.length}* заявок${overdue.length>0?` _(${overdue.length} просрочено!)_`:''}\n`;
-  msg+=`🏪 Ждём на филиал: *${wait.length}* заявок\n\n`;
-  msg+=`📊 *Вчера:*\n✅ Успешно: *${ydSucc.length}* сделок на *${fmt(ydAmount)} ₸*\n❌ Провал: *${ydFail.length}*\n\n`;
-  msg+=`📍 *Активные по городам:*\n• Атырау: ${byCity['Атырау']}\n• Актобе: ${byCity['Актобе']}\n• Уральск: ${byCity['Уральск']}`;
-  await tg(msg);
+  const fmt = n => new Intl.NumberFormat('ru-KZ').format(Math.round(n));
+
+  for (const city of ['Атырау','Актобе','Уральск']) {
+    const cityLeads = all.filter(l => l.city === city);
+    const newL   = cityLeads.filter(l => l.status==='new');
+    const inP    = cityLeads.filter(l => l.status==='in_progress');
+    const wait   = cityLeads.filter(l => l.status==='waiting');
+    const overdue= inP.filter(l => (Date.now()-new Date(l.updated_at||l.created_at).getTime())>10*3600*1000);
+    const ydSucc = cityLeads.filter(l => { const d=new Date(l.updated_at||l.created_at); return l.status==='success'&&d>=ydStart&&d<=ydEnd; });
+    const ydFail = cityLeads.filter(l => { const d=new Date(l.updated_at||l.created_at); return l.status==='fail'&&d>=ydStart&&d<=ydEnd; });
+    const ydAmount = ydSucc.reduce((s,l) => s+(Number(l.estimate_amount)||0), 0);
+    const cityEmoji = { 'Атырау':'🟡', 'Актобе':'🔵', 'Уральск':'🟣' };
+
+    let msg = `${cityEmoji[city]} *Доброе утро! Сводка SKUPKA — ${city}*\n\n`;
+    msg += `🆕 Новые: *${newL.length}* заявок ждут обработки\n`;
+    msg += `⚡ В работе: *${inP.length}*${overdue.length>0?` _(${overdue.length} просрочено!)_`:''}\n`;
+    msg += `🏪 Ждём на филиал: *${wait.length}*\n\n`;
+    msg += `📊 *Вчера:*\n✅ Успешно: *${ydSucc.length}* сделок на *${fmt(ydAmount)} ₸*\n❌ Провал: *${ydFail.length}*`;
+    await tg(msg, city);
+  }
   res.json({ ok:true });
 });
 
@@ -405,42 +418,57 @@ app.post('/cron/check-new', async (req, res) => {
   if (!isWorkingHours()) return res.json({ skipped:true });
   const { data: newLeads } = await supabase.from('leads').select('*').eq('status','new').eq('is_deleted',false).eq('is_archived',false).order('created_at',{ascending:true});
   if (!newLeads||newLeads.length===0) return res.json({ ok:true,count:0 });
-  const fmt=ms=>{const m=Math.floor(ms/60000);if(m<60)return`${m}мин`;const h=Math.floor(m/60),rm=m%60;return rm>0?`${h}ч ${rm}мин`:`${h}ч`;};
-  let msg=`🆕 *Необработанные заявки!*\n\n`;
-  newLeads.slice(0,10).forEach(l=>{msg+=`• ${l.client_name} — ${l.device?.slice(0,30)} — ${l.city} — _${fmt(Date.now()-new Date(l.created_at).getTime())}_\n`;});
-  if(newLeads.length>10)msg+=`_...и ещё ${newLeads.length-10}_\n`;
-  msg+=`\nВсего: *${newLeads.length}* заявок ждут обработки`;
-  await tg(msg);
-  res.json({ ok:true,count:newLeads.length });
+  const fmt = ms => { const m=Math.floor(ms/60000); if(m<60)return`${m}мин`; const h=Math.floor(m/60),rm=m%60; return rm>0?`${h}ч ${rm}мин`:`${h}ч`; };
+
+  for (const city of ['Атырау','Актобе','Уральск']) {
+    const cityLeads = newLeads.filter(l => l.city === city);
+    if (cityLeads.length === 0) continue;
+    let msg = `🆕 *Необработанные заявки — ${city}!*\n\n`;
+    cityLeads.slice(0,10).forEach(l => { msg += `• ${l.client_name} — ${l.device?.slice(0,30)} — _${fmt(Date.now()-new Date(l.created_at).getTime())}_\n`; });
+    if (cityLeads.length>10) msg += `_...и ещё ${cityLeads.length-10}_\n`;
+    msg += `\nВсего: *${cityLeads.length}* заявок ждут обработки`;
+    await tg(msg, city);
+  }
+  res.json({ ok:true, count:newLeads.length });
 });
 
 app.post('/cron/check-overdue', async (req, res) => {
   if (!isWorkingHours()) return res.json({ skipped:true });
   const { data: inP } = await supabase.from('leads').select('*').eq('status','in_progress').eq('is_deleted',false).eq('is_archived',false);
   if (!inP) return res.json({ ok:true });
-  const overdue=inP.filter(l=>(Date.now()-new Date(l.updated_at||l.created_at).getTime())>10*3600*1000);
+  const overdue = inP.filter(l => (Date.now()-new Date(l.updated_at||l.created_at).getTime())>10*3600*1000);
   if (overdue.length===0) return res.json({ ok:true,count:0 });
-  const fmt=ms=>{const h=Math.floor(ms/3600000),m=Math.floor((ms%3600000)/60000);return m>0?`${h}ч ${m}мин`:`${h}ч`;};
-  let msg=`🔴 *Заявки зависли в работе 10ч+!*\n\n`;
-  overdue.slice(0,10).forEach(l=>{msg+=`• ${l.client_name} — ${l.device?.slice(0,30)} — ${l.city} — _${fmt(Date.now()-new Date(l.updated_at||l.created_at).getTime())}_\n`;});
-  msg+=`\nТребуют внимания: *${overdue.length}* заявок`;
-  await tg(msg);
-  res.json({ ok:true,count:overdue.length });
+  const fmt = ms => { const h=Math.floor(ms/3600000),m=Math.floor((ms%3600000)/60000); return m>0?`${h}ч ${m}мин`:`${h}ч`; };
+
+  for (const city of ['Атырау','Актобе','Уральск']) {
+    const cityOverdue = overdue.filter(l => l.city === city);
+    if (cityOverdue.length === 0) continue;
+    let msg = `🔴 *Заявки зависли в работе 10ч+ — ${city}!*\n\n`;
+    cityOverdue.slice(0,10).forEach(l => { msg += `• ${l.client_name} — ${l.device?.slice(0,30)} — _${fmt(Date.now()-new Date(l.updated_at||l.created_at).getTime())}_\n`; });
+    msg += `\nТребуют внимания: *${cityOverdue.length}* заявок`;
+    await tg(msg, city);
+  }
+  res.json({ ok:true, count:overdue.length });
 });
 
 app.post('/cron/check-waiting', async (req, res) => {
   if (!isWorkingHours()) return res.json({ skipped:true });
   const { data: waiting } = await supabase.from('leads').select('*').eq('status','waiting').eq('is_deleted',false).eq('is_archived',false).not('visit_date','is',null);
   if (!waiting) return res.json({ ok:true });
-  const now=new Date();
-  const overdue=waiting.filter(l=>{if(!l.visit_date)return false;const ve=new Date(l.visit_date);ve.setHours(23,59,59,999);return now>ve;});
+  const now = new Date();
+  const overdue = waiting.filter(l => { if(!l.visit_date)return false; const ve=new Date(l.visit_date); ve.setHours(23,59,59,999); return now>ve; });
   if (overdue.length===0) return res.json({ ok:true,count:0 });
-  const fmt=ms=>{const d=Math.floor(ms/86400000),h=Math.floor((ms%86400000)/3600000);return d>0?(h>0?`${d}д ${h}ч`:`${d}д`):`${h}ч`;};
-  let msg=`🏪 *Клиенты не пришли на филиал!*\n\n`;
-  overdue.slice(0,10).forEach(l=>{const vd=new Date(l.visit_date).toLocaleDateString('ru-RU');const od=fmt(now-new Date(l.visit_date).getTime());msg+=`• ${l.client_name} — ${l.city}\n  Ожидали: ${vd}, просрочка _${od}_\n`;});
-  msg+=`\nУточните у клиентов — придут ли?`;
-  await tg(msg);
-  res.json({ ok:true,count:overdue.length });
+  const fmt = ms => { const d=Math.floor(ms/86400000),h=Math.floor((ms%86400000)/3600000); return d>0?(h>0?`${d}д ${h}ч`:`${d}д`):`${h}ч`; };
+
+  for (const city of ['Атырау','Актобе','Уральск']) {
+    const cityOverdue = overdue.filter(l => l.city === city);
+    if (cityOverdue.length === 0) continue;
+    let msg = `🏪 *Клиенты не пришли на филиал — ${city}!*\n\n`;
+    cityOverdue.slice(0,10).forEach(l => { const vd=new Date(l.visit_date).toLocaleDateString('ru-RU'); const od=fmt(now-new Date(l.visit_date).getTime()); msg+=`• ${l.client_name}\n  Ожидали: ${vd}, просрочка _${od}_\n`; });
+    msg += `\nУточните у клиентов — придут ли?`;
+    await tg(msg, city);
+  }
+  res.json({ ok:true, count:overdue.length });
 });
 
 app.post('/cron/revive-fails', async (req, res) => {
