@@ -3,6 +3,9 @@ const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
+const Anthropic = require('@anthropic-ai/sdk');
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const app = express();
 app.use(express.json());
@@ -486,6 +489,30 @@ app.post('/cron/archive-old', async (req, res) => {
   const threeMonthsAgo=new Date();threeMonthsAgo.setMonth(threeMonthsAgo.getMonth()-3);
   await supabase.from('leads').update({ is_archived:true }).in('status',['success','fail']).lt('updated_at',threeMonthsAgo.toISOString()).eq('is_archived',false).eq('is_deleted',false);
   res.json({ ok:true });
+});
+
+// ─── CRM Ассистент ────────────────────────────────────────────────────────────
+app.post('/api/assistant', async (req, res) => {
+  try {
+    const { messages, extra, intent } = req.body;
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1024,
+      system: `Ты CRM ассистент компании SKUPKA — компании по скупке техники
+в Казахстане (города: Атырау, Актобе, Уральск).
+Помогаешь сотрудникам оценивать технику и отвечаешь на вопросы.
+Общаешься только на русском языке.
+При поиске цен ищи на: Каспи, Сулпак, Технодом, Ozon KZ, WB KZ (новый)
+и OLX.kz, Каспи б/у (бу).
+Рекомендуй цену выкупа — обычно 60-70% от цены БУ.
+Будь дружелюбным и профессиональным. ${extra||''}`,
+      messages,
+    });
+    res.json({ response: response.content[0].text });
+  } catch (err) {
+    console.error('Assistant error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/ping', (req, res) => res.send('pong'));
