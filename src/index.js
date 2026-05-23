@@ -496,7 +496,7 @@ app.post('/api/assistant', async (req, res) => {
   try {
     const { messages, extra, intent } = req.body;
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-5',
       max_tokens: 1024,
       system: `Ты CRM ассистент компании SKUPKA — компании по скупке техники
 в Казахстане (города: Атырау, Актобе, Уральск).
