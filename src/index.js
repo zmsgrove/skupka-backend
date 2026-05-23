@@ -507,8 +507,18 @@ app.post('/api/assistant', async (req, res) => {
 Рекомендуй цену выкупа — обычно 60-70% от цены БУ.
 Будь дружелюбным и профессиональным. ${extra||''}`,
       messages,
+      tools: [
+        {
+          type: 'web_search_20250305',
+          name: 'web_search',
+        }
+      ],
     });
-    res.json({ response: response.content[0].text });
+    const fullResponse = response.content
+      .map(item => item.type === 'text' ? item.text : '')
+      .filter(Boolean)
+      .join('\n');
+    res.json({ response: fullResponse });
   } catch (err) {
     console.error('Assistant error:', err);
     res.status(500).json({ error: err.message });
