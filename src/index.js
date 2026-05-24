@@ -849,11 +849,7 @@ app.post('/api/assistant', async (req, res) => {
 Отвечай кратко и по делу.
 ${extra||''}`;
 
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-
-    const stream = anthropic.messages.stream({
+    const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-5',
       max_tokens: needsSearch ? 1024 : 300,
       system: systemPrompt,
@@ -861,23 +857,18 @@ ${extra||''}`;
       ...(needsSearch ? { tools: [{ type: 'web_search_20250305', name: 'web_search' }] } : {}),
     });
 
-    for await (const chunk of stream) {
-      if (chunk.type === 'content_block_delta' && chunk.delta?.type === 'text_delta') {
-        res.write(`data: ${JSON.stringify({ text: chunk.delta.text })}\n\n`);
-      }
-    }
+    const fullResponse = response.content
+      .map(item => item.type === 'text' ? item.text : '')
+      .filter(Boolean)
+      .join('\n');
 
-    res.write('data: [DONE]\n\n');
-    res.end();
+    res.json({ response: fullResponse });
   } catch (err) {
-    console.error('Assistant error:', err);
-    if (!res.headersSent) {
-      res.status(500).json({ error: err.message });
-    } else {
-      res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
-      res.write('data: [DONE]\n\n');
-      res.end();
-    }
+    console.error('Assistant error:', err.message);
+    console.error('Assistant error stack:', err.stack);
+    console.error('Assistant error status:', err.status);
+    console.error('Assistant error body:', JSON.stringify(err.error || err.body || {}));
+    res.status(500).json({ error: err.message });
   }
 });
 
