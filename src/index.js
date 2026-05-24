@@ -442,11 +442,11 @@ app.patch('/api/leads/:id', async (req, res) => {
   if (error) { console.error('❌ PATCH error:', error); return res.status(500).json({ error }); }
   // Сброс handed_over при закрытии карточки
   if (data && (updates.status === 'success' || updates.status === 'fail' || updates.is_archived || updates.is_deleted)) {
-    const { error: botResetError } = await supabase
+    const { error: botUpdateError } = await supabase
       .from('bot_sessions')
       .update({ handed_over: false })
       .eq('phone', data.phone);
-    if (botResetError) console.error('bot_sessions update error:', botResetError);
+    if (botUpdateError) console.error(botUpdateError);
   }
   if (updates.estimate_amount && send_estimate) {
     const amount = new Intl.NumberFormat('ru-KZ').format(updates.estimate_amount);
