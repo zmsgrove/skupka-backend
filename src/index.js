@@ -74,12 +74,23 @@ function kzTime() {
   return `${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}`;
 }
 
+// Устройство конкретной модели или только категория
+function isDeviceSpecific(device) {
+  if (!device || device.trim().length < 3) return false;
+  return !/^(телефон|смартфон|ноутбук|планшет|телевизор|tv|тв|iphone|айфон|samsung|самсунг|xiaomi|сяоми|ноут|лаптоп|телик|телек|техника|устройство|гаджет|компьютер|пк)$/i.test(device.trim());
+}
+
+// Клиент упомянул состояние устройства
+function hasConditionInfo(text) {
+  return /(состоян|царапин|акб|батар|аккум|хорош|плох|отличн|новый|новая|б\/у|бу|рабочий|рабочая|идеал|поврежд|трещин|разбит|сломан)/i.test(text);
+}
+
 async function parseClientMessage(text) {
   try {
     const resp = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 200,
-      messages: [{ role:'user', content:`Из сообщения клиента извлеки JSON без markdown:\n{"device":"модель или null","description":"состояние/АКБ/повреждения или null","city":"Атырау/Актобе/Уральск или null","language":"ru или kz"}\n\nСообщение: "${text.slice(0,300)}"` }],
+      messages: [{ role:'user', content:`Из сообщения клиента извлеки JSON без markdown:\n{"device":"модель или null","description":"состояние/АКБ/повреждения или null","city":"Атырау/Актобе/Уральск или null","language":"ru или kz"}\n\nПравила:\n- Игнорируй приветствия (привет, здравствуйте, саламатсызба, сәлем и тд)\n- Если сообщение только приветствие — device: null\n- Техника это только название устройства: телефон, ноутбук, телевизор и тд\n\nСообщение: "${text.slice(0,300)}"` }],
     });
     const raw = (resp.content[0]?.text || '{}').replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
     return JSON.parse(raw);
@@ -184,9 +195,10 @@ async function shouldCreateNewLead(phone) {
   return { create: false, lead: lastLead };
 }
 
-// ─── УМНЫЙ БОТ v2.2.6 ────────────────────────────────────────────────────
-// Requires bot_sessions columns: handed_over(bool), last_bot_reply_at(ts),
-// msg_count_since_reply(int), lang(text), collected_device(text), collected_description(text)
+// ─── УМНЫЙ БОТ v2.2.7 ────────────────────────────────────────────────────
+// Шаги диалога:
+// ask_device → ask_model → ask_condition → ask_city → done
+// Если клиент сразу написал всё — пропускаем лишние шаги
 async function handleBotStep(phone, chatId, messageText, messageId, waName) {
   const text = (messageText || '').trim();
   if (!text) return;
@@ -233,13 +245,16 @@ async function handleBotStep(phone, chatId, messageText, messageId, waName) {
   if (session?.step === 'done') {
     const { create, lead: existingLead } = await shouldCreateNewLead(phone);
     if (!create && existingLead) {
-      // Активная карточка — сохраняем, не плодим
       await saveMessage(existingLead.id, text, 'in', messageId);
       await supabase.rpc('increment_unread', { lead_id: existingLead.id });
       return;
     }
     // Карточка закрыта — начинаем новый диалог
-    await supabase.from('bot_sessions').update({ step: 'ask_device', first_message: text, collected_city: null, msg_count_since_reply: 0 }).eq('phone', phone);
+    await supabase.from('bot_sessions').update({
+      step: 'ask_device', first_message: text,
+      collected_city: null, collected_device: null, collected_description: null,
+      msg_count_since_reply: 0,
+    }).eq('phone', phone);
     await botReply(
       `Привет! 👋 Хотите продать технику? Напишите что именно у вас есть.`,
       `Сәлем! 👋 Техника сатқыңыз келе ме? Қандай техника барын жазыңыз.`
@@ -252,29 +267,72 @@ async function handleBotStep(phone, chatId, messageText, messageId, waName) {
     const parsed = await parseClientMessage(text);
     const detectedCity = parsed.city ? normalizeCityText(parsed.city) : null;
     const detectedLang = parsed.language || lang;
-    const device = parsed.device || text.slice(0,200);
+    const device = parsed.device;
 
-    await supabase.from('bot_sessions').insert({
-      phone, wazzup_chat_id: chatId,
-      step: detectedCity ? 'ask_city_confirm' : 'ask_city',
-      first_message: text,
-      collected_city: detectedCity || null,
-      collected_name: waName || null,
-      lang: detectedLang,
-      msg_count_since_reply: 0,
-    });
+    // Только приветствие — нет техники
+    if (!device) {
+      await supabase.from('bot_sessions').insert({
+        phone, wazzup_chat_id: chatId, step: 'ask_device',
+        first_message: text, collected_name: waName || null,
+        lang: detectedLang, msg_count_since_reply: 0,
+      });
+      await botReply(
+        `Привет! 👋 Хотите продать технику? Напишите что именно у вас есть.`,
+        `Сәлем! 👋 Техника сатқыңыз келе ме? Қандай техника барын жазыңыз.`
+      );
+      return;
+    }
 
+    // Есть город → создаём лид сразу
     if (detectedCity) {
-      // Клиент написал и устройство, и город сразу — создаём лид
+      await supabase.from('bot_sessions').insert({
+        phone, wazzup_chat_id: chatId, step: 'done',
+        first_message: text, collected_city: detectedCity,
+        collected_name: waName || null, lang: detectedLang, msg_count_since_reply: 0,
+      });
       await createLeadAndFinish({ phone, chatId, waName, firstMessage: text, device, description: parsed.description, city: detectedCity, lang: detectedLang, messageId });
       return;
     }
 
+    // Устройство не конкретное → уточнить модель
+    if (!isDeviceSpecific(device)) {
+      await supabase.from('bot_sessions').insert({
+        phone, wazzup_chat_id: chatId, step: 'ask_model',
+        first_message: text, collected_device: device,
+        collected_name: waName || null, lang: detectedLang, msg_count_since_reply: 0,
+      });
+      await botReply(
+        `Привет! 👋 Какой именно ${device}? Укажите модель и память если знаете`,
+        `Сәлем! 👋 Қандай ${device}? Модель мен жад мөлшерін білсеңіз жазыңыз`
+      );
+      return;
+    }
+
+    // Устройство конкретное, нет описания состояния → уточнить состояние
+    if (!hasConditionInfo(text) && !parsed.description) {
+      await supabase.from('bot_sessions').insert({
+        phone, wazzup_chat_id: chatId, step: 'ask_condition',
+        first_message: text, collected_device: device,
+        collected_name: waName || null, lang: detectedLang, msg_count_since_reply: 0,
+      });
+      await botReply(
+        `Привет! 👋 В каком состоянии ${device}? Есть царапины, АКБ знаете?`,
+        `Сәлем! 👋 ${device} қандай күйде? Тырналған жері бар ма, АКБ білесіз бе?`
+      );
+      return;
+    }
+
+    // Всё есть — спрашиваем город
+    await supabase.from('bot_sessions').insert({
+      phone, wazzup_chat_id: chatId, step: 'ask_city',
+      first_message: text, collected_device: device,
+      collected_description: parsed.description || null,
+      collected_name: waName || null, lang: detectedLang, msg_count_since_reply: 0,
+    });
     await botReply(
-      `Привет! 👋 Хотите продать технику? Отлично! В каком городе вам удобно — Атырау, Актобе или Уральск?`,
-      `Сәлем! 👋 Техника сатқыңыз келе ме? Тамаша! Қай қалада ыңғайлы — Атырау, Ақтөбе немесе Орал?`
+      `Привет! 👋 Отлично! В каком городе вам удобно — Атырау, Актобе или Уральск?`,
+      `Сәлем! 👋 Тамаша! Қай қалада ыңғайлы — Атырау, Ақтөбе немесе Орал?`
     );
-    await supabase.from('bot_sessions').update({ step: 'ask_city' }).eq('phone', phone);
     return;
   }
 
@@ -283,7 +341,7 @@ async function handleBotStep(phone, chatId, messageText, messageId, waName) {
     const parsed = await parseClientMessage(text);
     const detectedCity = parsed.city ? normalizeCityText(parsed.city) : null;
     const detectedLang = parsed.language || lang;
-    const device = parsed.device || text.slice(0,200);
+    const device = parsed.device || text.slice(0, 200);
 
     await supabase.from('bot_sessions').update({ lang: detectedLang }).eq('phone', phone);
 
@@ -292,11 +350,68 @@ async function handleBotStep(phone, chatId, messageText, messageId, waName) {
       return;
     }
 
+    if (!parsed.device || !isDeviceSpecific(device)) {
+      await supabase.from('bot_sessions').update({ step: 'ask_model', collected_device: device }).eq('phone', phone);
+      await botReply(
+        `Какой именно ${device || 'устройство'}? Укажите модель и память если знаете`,
+        `Қандай ${device || 'техника'}? Модель мен жад мөлшерін білсеңіз жазыңыз`
+      );
+      return;
+    }
+
+    if (!hasConditionInfo(text) && !parsed.description) {
+      await supabase.from('bot_sessions').update({ step: 'ask_condition', collected_device: device }).eq('phone', phone);
+      await botReply(
+        `Отлично! В каком состоянии ${device}? Есть царапины, АКБ знаете?`,
+        `Жақсы! ${device} қандай күйде? Тырналған жері бар ма, АКБ білесіз бе?`
+      );
+      return;
+    }
+
+    await supabase.from('bot_sessions').update({ step: 'ask_city', collected_device: device, collected_description: parsed.description || null }).eq('phone', phone);
     await botReply(
       `Отлично! В каком городе вам удобно — Атырау, Актобе или Уральск?`,
       `Жақсы! Қай қалада ыңғайлы — Атырау, Ақтөбе немесе Орал?`
     );
-    await supabase.from('bot_sessions').update({ step: 'ask_city', collected_device: device, collected_description: parsed.description || null }).eq('phone', phone);
+    return;
+  }
+
+  // ── Шаг ask_model ──
+  if (session.step === 'ask_model') {
+    const parsed = await parseClientMessage(text);
+    const detectedCity = parsed.city ? normalizeCityText(parsed.city) : null;
+    const device = parsed.device || text.slice(0, 100);
+
+    if (detectedCity) {
+      await createLeadAndFinish({ phone, chatId, waName, firstMessage: session.first_message || text, device, description: parsed.description, city: detectedCity, lang, messageId });
+      return;
+    }
+
+    await supabase.from('bot_sessions').update({ step: 'ask_condition', collected_device: device }).eq('phone', phone);
+    await botReply(
+      `Отлично! В каком состоянии ${device}? Есть царапины, АКБ знаете?`,
+      `Жақсы! ${device} қандай күйде? Тырналған жері бар ма, АКБ білесіз бе?`
+    );
+    return;
+  }
+
+  // ── Шаг ask_condition ──
+  if (session.step === 'ask_condition') {
+    const parsed = await parseClientMessage(text);
+    const detectedCity = parsed.city ? normalizeCityText(parsed.city) : null;
+    const description = text.slice(0, 200);
+    const device = session.collected_device || session.first_message || '—';
+
+    if (detectedCity) {
+      await createLeadAndFinish({ phone, chatId, waName, firstMessage: session.first_message || text, device, description, city: detectedCity, lang, messageId });
+      return;
+    }
+
+    await supabase.from('bot_sessions').update({ step: 'ask_city', collected_description: description }).eq('phone', phone);
+    await botReply(
+      `В каком городе вам удобно — Атырау, Актобе или Уральск?`,
+      `Қай қалада ыңғайлы — Атырау, Ақтөбе немесе Орал?`
+    );
     return;
   }
 
@@ -451,7 +566,7 @@ app.patch('/api/leads/:id', async (req, res) => {
   if (updates.estimate_amount && send_estimate) {
     const amount = new Intl.NumberFormat('ru-KZ').format(updates.estimate_amount);
     const address = CITY_ADDRESSES[data.city] || 'наш пункт приёма';
-    const msg = `Спасибо за ожидание, *${data.client_name}*! 👋\n\nМы оценили вашу технику: *${data.device}*\n\n💰 Предварительная стоимость: *${amount} ₸*\n\nЕсли устраивает — ждём по адресу: *${address}*\n\nЕсть вопросы — пишите! 😊`;
+    const msg = `Спасибо за ожидание! 👋\n\nМы оценили вашу технику: *${data.device}*\n\n💰 Предварительная стоимость: *${amount} ₸*\n\nЕсли устраивает — ждём по адресу: *${address}*\n\nЕсть вопросы — пишите! 😊`;
     await sendMessage(data.wazzup_chat_id, data.phone, msg);
     await saveMessage(id, msg, 'out', null, 'Сотрудник');
   }
@@ -679,15 +794,16 @@ app.post('/cron/archive-old', async (req, res) => {
   res.json({ ok:true });
 });
 
-// ─── CRM Ассистент ────────────────────────────────────────────────────────────
+// ─── CRM Ассистент v2.2.7 ─────────────────────────────────────────────────
 app.post('/api/assistant', async (req, res) => {
   try {
-    const { messages, extra, intent } = req.body;
+    const { messages, extra, intent, currentUser } = req.body;
     const needsSearch = ['assess', 'price', 'device'].includes(intent);
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5',
-      max_tokens: needsSearch ? 1024 : 300,
-      system: `Ты CRM ассистент компании SKUPKA — компании по скупке техники
+    const roleInfo = currentUser
+      ? `\nУчитывай роль: ${currentUser.role}, города: ${(currentUser.cities||[]).join(', ')}`
+      : '';
+
+    const systemPrompt = `Ты CRM ассистент компании SKUPKA — компании по скупке техники
 в Казахстане (города: Атырау, Актобе, Уральск).
 Общаешься только на русском языке. Будь дружелюбным и профессиональным.
 
@@ -723,20 +839,45 @@ app.post('/api/assistant', async (req, res) => {
 Без лишних слов, без воды. Максимум 10-15 строк.
 В конце добавляй: "Нужен подробный анализ? Напишите 'подробно'"
 Если пользователь пишет 'подробно' — давай полный развёрнутый анализ.
-${extra||''}`,
+
+Ты также умеешь:
+- Создавать задачи когда просят
+- Отвечать на вопросы о данных CRM
+- Открывать страницы CRM
+- Давать статистику по заявкам, конверсии, сотрудникам
+Когда нужны данные из CRM — они будут переданы в extra.${roleInfo}
+Отвечай кратко и по делу.
+${extra||''}`;
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const stream = anthropic.messages.stream({
+      model: 'claude-sonnet-4-5',
+      max_tokens: needsSearch ? 1024 : 300,
+      system: systemPrompt,
       messages,
-      ...(needsSearch ? {
-        tools: [{ type: 'web_search_20250305', name: 'web_search' }]
-      } : {})
+      ...(needsSearch ? { tools: [{ type: 'web_search_20250305', name: 'web_search' }] } : {}),
     });
-    const fullResponse = response.content
-      .map(item => item.type === 'text' ? item.text : '')
-      .filter(Boolean)
-      .join('\n');
-    res.json({ response: fullResponse });
+
+    for await (const chunk of stream) {
+      if (chunk.type === 'content_block_delta' && chunk.delta?.type === 'text_delta') {
+        res.write(`data: ${JSON.stringify({ text: chunk.delta.text })}\n\n`);
+      }
+    }
+
+    res.write('data: [DONE]\n\n');
+    res.end();
   } catch (err) {
     console.error('Assistant error:', err);
-    res.status(500).json({ error: err.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    } else {
+      res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    }
   }
 });
 
