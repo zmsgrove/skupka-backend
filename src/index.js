@@ -564,17 +564,6 @@ app.post('/cron/check-waiting', async (req, res) => {
   res.json({ ok:true, count:overdue.length });
 });
 
-app.post('/cron/revive-fails', async (req, res) => {
-  const twoWeeksAgo=new Date();twoWeeksAgo.setDate(twoWeeksAgo.getDate()-14);
-  const { data: fails }=await supabase.from('leads').select('*').eq('status','fail').eq('is_deleted',false).lt('updated_at',twoWeeksAgo.toISOString());
-  if (!fails||fails.length===0) return res.json({ revived:0 });
-  for (const lead of fails) {
-    await supabase.from('leads').update({ status:'in_progress',fail_comment:null,revived_from_fail:true,updated_at:new Date().toISOString() }).eq('id',lead.id);
-    await supabase.from('comments').insert({ lead_id:lead.id,author:'Система',pinned:true,text:'♻️ Повторный контакт — клиент ранее был в провале. Свяжитесь и уточните актуальность.' });
-  }
-  res.json({ revived:fails.length });
-});
-
 app.post('/cron/archive-old', async (req, res) => {
   const threeMonthsAgo=new Date();threeMonthsAgo.setMonth(threeMonthsAgo.getMonth()-3);
   await supabase.from('leads').update({ is_archived:true }).in('status',['success','fail']).lt('updated_at',threeMonthsAgo.toISOString()).eq('is_archived',false).eq('is_deleted',false);
